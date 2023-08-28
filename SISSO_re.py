@@ -11,6 +11,33 @@ guillermo.vazquez/SISSO_ver/EMPTY_FILES/runEMPTY.slurm"
 EMPTY_SISSO_FN = "/scratch/group/arroyave_lab/\
 guillermo.vazquez/SISSO_ver/EMPTY_FILES/SISSO.in"
 
+SLURM_DIC = {
+    '--job-name': 'FIRST',
+    '--ntasks': '20',
+    '--nodes': '1',
+    '--ntasks-per-node': '20',
+    '--time': '8:00:00',
+    '--mail-user': 'guillermo.vazquez@tamu.edu',
+    '--mem': '40G',
+    
+    'spec_modules': ['intel/2022.12'],
+    'spec_env_cmd': '',
+    'job_commands': ["mpirun -n XX /scratch/group/arroyave_lab/\
+    guillermo.vazquez/SISSO_ver/SISSObin/SISSO > log"],
+    
+    'spec_path': [],
+}
+
+
+SISSO_DIC = {
+    'ops': "\'(*)(/)\'",
+    'desc_dim': 3,
+    # 'funit':"",
+    'nf_sis': 50,
+    'fcomplexity': 1,
+    'method_so': "\'L0\'",
+}
+
 
 class SISSO_obj:
     def __init__(self, directory_filename):
@@ -30,7 +57,13 @@ class SISSO_obj:
                       ' ls pickle object')
                 print(e)
 
-    def create(self, train_df, target_np, slurm_dic, sisso_dic):
+    def set_params(self, slurm_dic=SLURM_DIC, sisso_dic=SISSO_DIC):
+        self.slurm_dic = slurm_dic
+        self.sisso_dic = sisso_dic
+
+    def train(self, train_df, target_np):
+        # train_df may cause troubles with the scikit model
+
         if self.STATUS != 'CREATED':
             print('SISSO job has already been submitted plase' +
                   ' reset the directory')
@@ -38,9 +71,7 @@ class SISSO_obj:
         try:
             folder_or_delete(self.DIR_N)
             os.chdir(self.DIR_N)
-
-            self.slurm_dic = slurm_dic
-            self.sisso_dic = sisso_dic
+            
             self.tdf = train_df.copy()
             self.y = target_np
             self.no_feat = self.tdf.columns.shape[0]
@@ -186,9 +217,13 @@ class SISSO_obj:
         send_out = subprocess.run(send_str, capture_output=True)
         out_work = send_out.stdout.decode("utf-8").split()
         self.STATUS = out_work[2]
-        
-        with open(self.DIR_N + '/SISSO.out', "r") as in_file:
-            self.SISSO_out = in_file.read()
+        if os.path.exists(self.DIR_N + '/SISSO.out'):
+            with open(self.DIR_N + '/SISSO.out', "r") as in_file:
+                self.SISSO_out = in_file.read()
+        else:
+            self.last_dimension = 0
+            print('no SISSO.out file created yet')
+            return 
 
         all_lines = self.SISSO_out.split('\n')
         self.raw_desc = []
