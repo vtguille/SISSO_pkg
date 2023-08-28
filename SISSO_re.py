@@ -4,6 +4,8 @@ import subprocess
 import pickle
 import numpy as np
 
+"""adding scikit-learn model properties """
+
 EMPTY_SLURM_FN = "/scratch/group/arroyave_lab/\
 guillermo.vazquez/SISSO_ver/EMPTY_FILES/runEMPTY.slurm"
 EMPTY_SISSO_FN = "/scratch/group/arroyave_lab/\
