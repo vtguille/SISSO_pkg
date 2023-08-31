@@ -3,6 +3,12 @@ import shutil
 import subprocess
 import pickle
 import numpy as np
+import pandas as pd
+from sklearn.metrics import mean_squared_error as mse
+from sklearn.metrics import mean_absolute_error as mae
+from sklearn.metrics import r2_score
+import matplotlib.pyplot as plt
+
 
 """adding scikit-learn model properties """
 
@@ -22,8 +28,8 @@ SLURM_DIC = {
     
     'spec_modules': ['intel/2022.12'],
     'spec_env_cmd': '',
-    'job_commands': ["mpirun -n XX /scratch/group/arroyave_lab/\
-    guillermo.vazquez/SISSO_ver/SISSObin/SISSO > log"],
+    'job_commands': ['mpirun -n XX /scratch/group/arroyave_lab/' +
+                     'guillermo.vazquez/SISSO_ver/SISSObin/SISSO > log'],
     
     'spec_path': [],
 }
@@ -58,10 +64,12 @@ class SISSO_obj:
                 print(e)
 
     def set_params(self, slurm_dic=SLURM_DIC, sisso_dic=SISSO_DIC):
-        self.slurm_dic = slurm_dic
-        self.sisso_dic = sisso_dic
+        if ~hasattr(self, 'slurm_dic'):
+            self.slurm_dic = slurm_dic
+        if ~hasattr(self, 'sisso_dic'):
+            self.sisso_dic = sisso_dic
 
-    def train(self, train_df, target_np):
+    def fit(self, train_df, target_np):
         # train_df may cause troubles with the scikit model
 
         if self.STATUS != 'CREATED':
@@ -71,23 +79,38 @@ class SISSO_obj:
         try:
             folder_or_delete(self.DIR_N)
             os.chdir(self.DIR_N)
-            
-            self.tdf = train_df.copy()
-            self.y = target_np
-            self.no_feat = self.tdf.columns.shape[0]
-            self.org_cols = list(self.tdf.columns)
-            self.str_cols = ['feat{:05d}'.format(i) for i in range(
-                self.no_feat)]
-            self.tdf.columns = self.str_cols
-            self.tdf.insert(0, 'index', self.y.index)
+            if isinstance(train_df, pd.DataFrame):
+                self.tdf = train_df.copy()
+                
+                self.no_feat = self.tdf.columns.shape[0]
+                self.org_cols = list(self.tdf.columns)
+                self.str_cols = ['feat{:05d}'.format(i) for i in range(
+                    self.no_feat)]
+                self.tdf.columns = self.str_cols
+                self.tdf.insert(0, 'index', self.tdf.index)
+                
+            else:
+                # lists and arrays
+                array = np.array(train_df)
+                self.no_feat = array.shape[1]
+                self.str_cols = ['feat{:05d}'.format(i) for i in range(
+                    self.no_feat)]
+                self.org_cols = self.str_cols.copy()
+                self.tdf = pd.DataFrame(columns=self.str_cols, data=array)
+                self.tdf.insert(0, 'index', self.tdf.index)
+            if isinstance(target_np, pd.DataFrame):
+                self.y = target_np.copy()
+            else:
+                self.y = pd.Series(target_np)
+
             self.tdf.insert(1, 'target', self.y.copy())
-            
             self.tdf.to_csv('train.dat', sep=' ', index=False)
             self.create_SLURM(self.slurm_dic)
             self.create_SISSOin(self.sisso_dic)
 
             self.send_job()
             self.save_obj()
+            self.last_dimension = 0
             os.chdir('..')
         except Exception as e:
             print('Exception: \n', e)
@@ -199,24 +222,29 @@ class SISSO_obj:
             self.STATUS = 'ERROR'
             pass
 
-    def save_obj(self):
-        with open('obj.pkl', "wb") as fp:
+    def save_obj(self, save_file='obj.pkl'):
+        with open(save_file, "wb") as fp:
             d = dict(self.__dict__)
             pickle.dump(d, fp)
 
-    def load_obj(self):
-        with open('obj.pkl', "rb") as fp:
+    def load_obj(self, save_file='obj.pkl'):
+        with open(save_file, "rb") as fp:
             d = pickle.load(fp)
         self.__dict__.update(d)
 
-    def update(self):
-        if self.STATUS == 'COMPLETED':
-            print('job already completed and nothing to update')
+    def update(self, force_update=False):
+        if self.STATUS == 'COMPLETED' and not force_update:
+            # print('job already completed and nothing to update')
             return
-        send_str = ['sacct', '-j', str(self.slurm_ID), '-o', 'state']
-        send_out = subprocess.run(send_str, capture_output=True)
-        out_work = send_out.stdout.decode("utf-8").split()
-        self.STATUS = out_work[2]
+        try:
+            send_str = ['sacct', '-j', str(self.slurm_ID), '-o', 'state']
+            send_out = subprocess.run(send_str, capture_output=True)
+            out_work = send_out.stdout.decode("utf-8").split()
+            self.STATUS = out_work[2]
+        except Exception as e:
+            print('SLURM job STATUS is not ready or not working: ')
+            print(e)
+        
         if os.path.exists(self.DIR_N + '/SISSO.out'):
             with open(self.DIR_N + '/SISSO.out', "r") as in_file:
                 self.SISSO_out = in_file.read()
@@ -228,7 +256,7 @@ class SISSO_obj:
         all_lines = self.SISSO_out.split('\n')
         self.raw_desc = []
         self.raw_model = []
-        self.last_dimension = 0
+        
         for d in range(1, self.sisso_dic['desc_dim']+1):
             
             pattern = str(d)+"D descriptor"
@@ -271,6 +299,7 @@ class SISSO_obj:
             v_lines[i] = v_lines[i].replace('sqrt', 'np.sqrt')
             v_lines[i] = v_lines[i].replace('log', 'np.log')
             v_lines[i] = v_lines[i].replace('abs', 'np.abs')
+            v_lines[i] = v_lines[i].replace('cbrt', 'np.cbrt')
 
             for nf, f in enumerate(self.str_cols):
                 if f in v_lines[i]:
@@ -281,25 +310,84 @@ class SISSO_obj:
                         f, 'df[\''+f+'\'].values')
 
         self.v_lines = v_lines
+        self.save_obj(self.DIR_N+'/obj.pkl')
 
-    def eval_df(self, df, DIM):
-        
+    def eval_X(self, X, DIM):
+        self.update()
+        if isinstance(X, pd.DataFrame):
+            df = X.copy()
+        else:
+            X = np.array(X)
+            df = pd.DataFrame(data=X)
         no_feat = df.columns.shape[0]
 
         if no_feat != self.no_feat:
             print('ERROR: Dataframes don\'t match')
             return
         df.columns = self.str_cols
-        if DIM < 1 or DIM > self.last_dimension:
+        if DIM > self.last_dimension:
             print('ERROR: dimension not available so far or not available')
+            return
+        elif DIM == 0:
+            print('ERROR: dimension is ZERO')
             return
 
         triangular_number = (DIM - 1) * (DIM) // 2
-        print(triangular_number)
         suma = self.raw_model[(DIM - 1) * 3 + 1]
         for i, c in enumerate(self.raw_model[(DIM - 1) * 3]):
             suma = suma+c*eval(self.v_lines[triangular_number + i])
         return suma
+
+    def predict(self, X):
+        return self.eval_X(X, self.sisso_dic['desc_dim'])
+
+    def score(self, X, y):
+        y = np.array(y)
+        y_pred = self.predict(X)
+        return {'RMSE': np.sqrt(mse(y_pred, y)),
+                'MAE': np.max(np.abs(y_pred-y)),
+                'r2': r2_score(y_pred, y)}
+
+    def print_formula_latex(self, DIM=3):
+        triangular_number = (DIM - 1) * (DIM) // 2
+        a0 = self.raw_model[(DIM - 1) * 3 + 1]
+        a = []
+        feats = []
+        for i, c in enumerate(self.raw_model[(DIM - 1) * 3]):
+            feats.append(self.raw_desc[triangular_number + i])
+            a.append(c)
+        print(a0, a, feats)
+        
+        for i in range(DIM):
+            
+            for f, l in zip(self.str_cols, self.org_cols):
+                feats[i] = feats[i].replace(f, l)
+            feats[i] = feats[i].replace('log', '\\ln')
+            feats[i] = feats[i].replace('_', '\\_')
+            feats[i] = feats[i].replace('/', ' / ')
+            feats[i] = feats[i].replace('*', ' ')
+            
+        ws = "{:.2E}".format(a0[0]).replace('E', '\\times 10 ^')
+        dummy = ws.split('^')[1]
+        intdummy = int(dummy)
+        ws = ws.replace(dummy, '{'+str(intdummy)+'}')
+        ws = ws.replace('10 ^{0}', '')
+
+        final_str = '$\\begin{array}{c}\n'+ws[:]
+        for i in range(len(feats)):
+            
+            ws = "{:.2E}".format(a[i]).replace('E', '\\times 10 ^')
+            dummy = ws.split('^')[1]
+            intdummy = int(dummy)
+            ws = ws.replace(dummy, '{'+str(intdummy)+'}')
+            ws = ws.replace('10 ^{0}', '')
+            
+            if a[i] < 0:
+                final_str = final_str+ws+feats[i]+'\\\\\n'
+            else:
+                final_str = final_str+"+"+ws+feats[i]+'\\\\\n'
+        final_str = final_str+'\\end{array}$'
+        print(final_str)
 
 
 def folder_or_delete(dir_name, delete=True):
@@ -314,3 +402,49 @@ def folder_or_delete(dir_name, delete=True):
             os.mkdir(dir_name)
         else:
             pass
+
+
+def get_lims(xs, ys, panf=0.05):
+    
+    h_ = np.append(xs, ys)
+    mi, ma = np.min(h_), np.max(h_)
+    pan = panf*(ma-mi)
+    return mi-pan, ma+pan
+
+
+def parity_plots(gtcl_list, s=5, color='blue', alpha=1):
+    no_values = len(gtcl_list)
+    fig, axs = plt.subplots(1, no_values, figsize=(5*no_values, 5))  
+    # Set the figsize parameter to control the figure size
+    if no_values == 1:
+        ii = gtcl_list[0][0]
+        jj = gtcl_list[0][1]
+        axs.scatter(ii, jj, s=s, color=color, alpha=alpha)
+
+        mi, ma = get_lims(ii, jj)
+        axs.set_xlim(mi, ma)
+        axs.set_ylim(mi, ma)
+        axs.grid(True)
+        axs.annotate(r'$r^2=$'+'{:.4f}'.format(
+            r2_score(ii, jj)), xy=(0.1, 0.9), xycoords='axes fraction')
+        axs.annotate(r'$RMSE=$'+'{:.4f}'.format(
+            np.sqrt(mse(ii, jj))), xy=(0.1, 0.8), xycoords='axes fraction')
+        axs.annotate(r'$MAE=$'+'{:.4f}'.format(
+            mae(ii, jj)), xy=(0.1, 0.7), xycoords='axes fraction')
+    else:
+        for i in range(no_values):
+
+            ii = gtcl_list[i][0]
+            jj = gtcl_list[i][1]
+            axs[i].scatter(ii, jj, s=s, color=color, alpha=alpha)
+
+            mi, ma = get_lims(ii, jj)
+            axs[i].set_xlim(mi, ma)
+            axs[i].set_ylim(mi, ma)
+            axs[i].grid(True)
+            axs[i].annotate(r'$r^2=$'+'{:.4f}'.format(
+                r2_score(ii, jj)), xy=(0.1, 0.9), xycoords='axes fraction')
+            axs[i].annotate(r'$RMSE=$'+'{:.4f}'.format(
+                np.sqrt(mse(ii, jj))), xy=(0.1, 0.8), xycoords='axes fraction')
+            axs[i].annotate(r'$MAE=$'+'{:.4f}'.format(
+                mae(ii, jj)), xy=(0.1, 0.7), xycoords='axes fraction')
